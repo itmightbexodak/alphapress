@@ -60,23 +60,23 @@ tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
-# 1. 독립 네트워크 네임스페이스를 위한 DNS 복사 및 디렉토리 생성
+# 1. 가상 환경 내부 네트워크 설정을 위한 디렉토리 및 DNS 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg/repos"
 mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-# 2. [핵심 수정] FreeBSD 15 환경에 맞는 순수 정수형 ABI 포맷 강제 추출
+# 2. FreeBSD 15 정수형 ABI 포맷 강제 추출
 HOST_VERSION=$(uname -r | cut -d'.' -f1)
 HOST_ARCH=$(uname -p)
 CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
 
-echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중..."
+echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 재구축 중..."
 
-# 3. [에러 원천 차단] 가상 환경(Chroot) 내부 전역 저장소 설정 파일 직접 생성
-# (호스트의 불안정한 conf 복사를 중단하고, 최신 바이너리가 보장되는 Latest 미러 주소를 직주입합니다)
-cat << EOF > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+# 3. [오류 수정] 도메인과 ABI 변수 사이에 완벽한 슬래시(/) 고정 및 이스케이프 보정
+# (싱글 쿼터 'EOF'를 사용하여 내부의 ${ABI} 문자열이 온전히 파일에 텍스트로 보존되도록 조치)
+cat << 'EOF' > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 FreeBSD: {
-  url: "pkg+https://freebsd.org\${ABI}/latest",
+  url: "pkg+https://freebsd.org{ABI}/latest",
   mirror_type: "srv",
   signature_type: "fingerprints",
   fingerprints: "/usr/share/keys/pkg",
@@ -84,14 +84,15 @@ FreeBSD: {
 }
 EOF
 
-# 4. 환경 변수 간섭을 방지하기 위해 전역 ABI 변수를 완전 소거(unset)
+# 4. 호스트 쉘의 기존 환경 변수 간섭 소거
 unset ABI
 
-echo "-> 패키지 리포지토리 카탈로그 강제 동기화 (Target: ${CLEAN_ABI})"
+echo "-> 패키지 리포지토리 카탈로그 강제 동기화 (Target ABI: ${CLEAN_ABI})"
 pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" update -f
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
 pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" install -y ${PACKAGES}
+
 
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
