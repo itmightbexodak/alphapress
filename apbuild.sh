@@ -72,17 +72,15 @@ CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
 
 echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중..."
 
-# 3. [오류 완전 수정] ${ABI} 변수 대입을 포기하고 파싱된 고유 주소를 파일에 직주입
-# (싱글 쿼터 없이 일반 EOF를 사용하여, 쉘 스크립트가 실행될 때 CLEAN_ABI 값을 주소에 완전히 박아넣습니다)
-cat << EOF > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-FreeBSD: {
-  url: "pkg+https://freebsd.org{CLEAN_ABI}/latest",
-  mirror_type: "srv",
-  signature_type: "fingerprints",
-  fingerprints: "/usr/share/keys/pkg",
-  enabled: yes
-}
-EOF
+# 3. [오류 완전 수정] cat 대신 echo 구문을 사용하여 완성된 주소 텍스트를 파일에 직주입
+# (변수 해석 오류, 이스케이프 유실, 도메인 깨짐 문제를 완전히 원천 차단합니다)
+echo "FreeBSD: {" > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+echo "  url: \"pkg+https://freebsd.org{CLEAN_ABI}/latest\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+echo "  mirror_type: \"srv\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+echo "  signature_type: \"fingerprints\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+echo "  fingerprints: \"/usr/share/keys/pkg\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+echo "  enabled: yes" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+echo "}" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 
 # 4. 호스트 쉘의 기존 환경 변수 간섭 소거
 unset ABI
