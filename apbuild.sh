@@ -1,6 +1,6 @@
 #!/bin/sh
 # ==============================================================================
-# FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트(깃헙 커밋 적용 여부 확인용)
+# FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트
 # ==============================================================================
 
 set -e
@@ -14,7 +14,6 @@ fi
 DISTRO_NAME="ALPHAPRESS"
 TIMESTAMP=$(date +%s)
 
-# 매 빌드마다 고유한 독립 폴더를 생성하여 이전 삭제 실패 찌꺼기와 완전히 격리
 WORK_DIR="/tmp/alphapress_build_${TIMESTAMP}"
 ISO_OUT_DIR="/tmp/alphapress_out_${TIMESTAMP}"
 ISO_PATH="${ISO_OUT_DIR}/${DISTRO_NAME}-Desktop.iso"
@@ -52,44 +51,85 @@ kldload linprocfs 2>/dev/null || true
 echo "=== [1/6] 청정 격리 빌드 디렉토리 초기화 및 Base 동기화 ==="
 mkdir -p "${WORK_DIR}/rootfs" "${ISO_OUT_DIR}"
 
-tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /usr/libexec | tar -xf - -C "${WORK_DIR}/rootfs"
-mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
+tar -cf - -C / \
+    --exclude=proc \
+    --exclude=dev \
+    --exclude=tmp \
+    boot bin sbin lib libexec etc \
+    usr/bin usr/sbin usr/lib usr/libexec | \
+    tar -xf - -C "${WORK_DIR}/rootfs"
+
+mkdir -p \
+    "${WORK_DIR}/rootfs/dev" \
+    "${WORK_DIR}/rootfs/proc" \
+    "${WORK_DIR}/rootfs/root" \
+    "${WORK_DIR}/rootfs/tmp" \
+    "${WORK_DIR}/rootfs/var/db/pkg" \
+    "${WORK_DIR}/rootfs/var/cache/pkg" \
+    "${WORK_DIR}/rootfs/var/run" \
+    "${WORK_DIR}/rootfs/var/log"
+
+chmod 1777 "${WORK_DIR}/rootfs/tmp"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
-# 1. 가상 환경 내부 네트워크 설정을 위한 디렉토리 및 DNS 복사
+
+# DNS 설정 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
-mkdir -p "${WORK_DIR}/rootfs/etc/pkg/repos"
-mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-echo "-> FreeBSD 15 저장소 설정에 물리 주소 다이렉트 주입 중..."
+# pkg 저장소 디렉토리 생성
+mkdir -p "${WORK_DIR}/rootfs/etc/pkg"
+mkdir -p "${WORK_DIR}/rootfs/usr/share/keys/pkg/trusted"
+mkdir -p "${WORK_DIR}/rootfs/usr/share/keys/pkg/revoked"
 
-# 2. [오류 최종 타파] 어떠한 변수($)나 기호({})도 일절 사용하지 않고, 
-# FreeBSD 15 공식 amd64 latest 패키지 서버 실물 주소를 텍스트 그대로 하드코딩 주입합니다.
-cat << 'NETEOF' > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+# 호스트의 pkg 키 복사 (서명 검증에 필요)
+if [ -d "/usr/share/keys/pkg" ]; then
+    cp -R /usr/share/keys/pkg/ "${WORK_DIR}/rootfs/usr/share/keys/"
+fi
+
+echo "-> FreeBSD 패키지 저장소 URL 하드코딩 설정 중..."
+
+# 호스트 ABI 자동 감지
+HOST_ABI=$(pkg config ABI 2>/dev/null || echo "FreeBSD:15:amd64")
+echo "-> 감지된 호스트 ABI: ${HOST_ABI}"
+
+cat > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf" << NETEOF
 FreeBSD: {
-  url: "pkg+https://freebsd.org",
-  mirror_type: "srv",
+  url: "https://pkg.freebsd.org/${HOST_ABI}/latest",
+  mirror_type: "none",
   signature_type: "fingerprints",
   fingerprints: "/usr/share/keys/pkg",
   enabled: yes
 }
 NETEOF
 
-# 3. Chroot 외부 호스트 쉘 및 내부 환경 변수의 모든 간섭 차단
+echo "-> 설정된 저장소 URL 확인:"
+cat "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+
+# 호스트 환경변수 간섭 차단
 unset ABI
 unset CLEAN_ABI
+unset PKG_DBDIR
+unset PKG_CACHEDIR
 
 echo "-> 패키지 리포지토리 카탈로그 강제 동기화 진행..."
-pkg -c "${WORK_DIR}/rootfs" update -f
+pkg -o ABI="${HOST_ABI}" \
+    -o REPOS_DIR="${WORK_DIR}/rootfs/etc/pkg" \
+    -c "${WORK_DIR}/rootfs" \
+    update -f
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
-pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
+pkg -o ABI="${HOST_ABI}" \
+    -o REPOS_DIR="${WORK_DIR}/rootfs/etc/pkg" \
+    -c "${WORK_DIR}/rootfs" \
+    install -y ${PACKAGES}
 
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
 mkdir -p "${SKEL_DIR}"
-git clone --depth 1 https://github.com "${SKEL_DIR}/.oh-my-zsh"
+
+# Oh-My-Zsh 공식 저장소에서 클론
+git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh.git "${SKEL_DIR}/.oh-my-zsh"
 
 cat << 'EOF' > "${SKEL_DIR}/.zshrc"
 export ZSH="$HOME/.oh-my-zsh"
@@ -97,37 +137,73 @@ ZSH_THEME="bira"
 plugins=(git)
 source $ZSH/oh-my-zsh.sh
 EOF
+
 cp "${SKEL_DIR}/.zshrc" "${WORK_DIR}/rootfs/root/.zshrc"
 cp -R "${SKEL_DIR}/.oh-my-zsh" "${WORK_DIR}/rootfs/root/.oh-my-zsh"
 
 sed -i '' 's|/bin/csh|/usr/local/bin/zsh|g' "${WORK_DIR}/rootfs/etc/master.passwd"
 pwd_mkdb -d "${WORK_DIR}/rootfs/etc" "${WORK_DIR}/rootfs/etc/master.passwd"
 
+
 echo "=== [4/6] 오픈소스 Hatter 아이콘 실시간 클론 및 이식 ==="
-HATTER_DIR="${WORK_DIR}/rootfs/usr/local/share/icons/Hatter"
 mkdir -p "${WORK_DIR}/rootfs/usr/local/share/icons"
-git clone --depth 1 https://github.com "${WORK_DIR}/tmp_hatter"
-mv "${WORK_DIR}/tmp_hatter/Hatter" "${HATTER_DIR}"
-rm -rf "${WORK_DIR}/tmp_hatter"
+
+# Hatter 아이콘 공식 저장소 클론
+git clone --depth 1 https://github.com/Mibea/Hatter.git "${WORK_DIR}/tmp_hatter"
+
+HATTER_DIR="${WORK_DIR}/rootfs/usr/local/share/icons/Hatter"
+
+# 저장소 내부 구조에 따라 분기 처리
+if [ -d "${WORK_DIR}/tmp_hatter/Hatter" ]; then
+    # 저장소 루트 아래에 Hatter 폴더가 별도로 있는 경우
+    mv "${WORK_DIR}/tmp_hatter/Hatter" "${HATTER_DIR}"
+else
+    # 저장소 자체가 Hatter 아이콘 테마인 경우
+    mv "${WORK_DIR}/tmp_hatter" "${HATTER_DIR}"
+fi
+
+rm -rf "${WORK_DIR}/tmp_hatter" 2>/dev/null || true
+echo "-> Hatter 아이콘 설치 완료: ${HATTER_DIR}"
+
 
 echo "=== [4-2/6] Pretendard 및 D2Coding 폰트 다운로드 및 시스템 글꼴 등록 ==="
+
+# Pretendard 폰트
 PRETENDARD_DIR="${WORK_DIR}/rootfs/usr/local/share/fonts/Pretendard"
 mkdir -p "${PRETENDARD_DIR}"
-curl -L -o "${WORK_DIR}/Pretendard.zip" "https://github.com"
-unzip -q "${WORK_DIR}/Pretendard.zip" -d "${WORK_DIR}/pretendard_extracted"
-cp "${WORK_DIR}/pretendard_extracted/public/static/Alternative/"*.ttf "${PRETENDARD_DIR}/"
-rm -rf "${WORK_DIR}/Pretendard.zip" "${WORK_DIR}/pretendard_extracted"
+curl -L -o "${WORK_DIR}/Pretendard.zip" \
+    "https://github.com/orioncactus/pretendard/releases/latest/download/Pretendard-1.3.9.zip" \
+    || echo "⚠️  Pretendard 다운로드 실패 - 수동으로 설치하세요."
 
+if [ -f "${WORK_DIR}/Pretendard.zip" ]; then
+    unzip -q "${WORK_DIR}/Pretendard.zip" -d "${WORK_DIR}/pretendard_extracted" || true
+    find "${WORK_DIR}/pretendard_extracted" -name "*.ttf" \
+        -exec cp {} "${PRETENDARD_DIR}/" \; 2>/dev/null || true
+    rm -rf "${WORK_DIR}/Pretendard.zip" "${WORK_DIR}/pretendard_extracted"
+fi
+
+# D2Coding 폰트
 D2CODING_DIR="${WORK_DIR}/rootfs/usr/local/share/fonts/D2Coding"
 mkdir -p "${D2CODING_DIR}"
-curl -L -o "${WORK_DIR}/D2Coding.zip" "https://github.com"
-unzip -q "${WORK_DIR}/D2Coding.zip" -d "${WORK_DIR}/d2coding_extracted"
-find "${WORK_DIR}/d2coding_extracted" -name "*.ttf" -exec cp {} "${D2CODING_DIR}/" \;
-rm -rf "${WORK_DIR}/D2Coding.zip" "${WORK_DIR}/d2coding_extracted"
+curl -L -o "${WORK_DIR}/D2Coding.zip" \
+    "https://github.com/naver/d2codingfont/releases/latest/download/D2Coding-Ver1.3.2-20180524.zip" \
+    || echo "⚠️  D2Coding 다운로드 실패 - 수동으로 설치하세요."
 
-chroot "${WORK_DIR}/rootfs" fc-cache -f -v
+if [ -f "${WORK_DIR}/D2Coding.zip" ]; then
+    unzip -q "${WORK_DIR}/D2Coding.zip" -d "${WORK_DIR}/d2coding_extracted" || true
+    find "${WORK_DIR}/d2coding_extracted" -name "*.ttf" \
+        -exec cp {} "${D2CODING_DIR}/" \; 2>/dev/null || true
+    rm -rf "${WORK_DIR}/D2Coding.zip" "${WORK_DIR}/d2coding_extracted"
+fi
+
+# fc-cache는 chroot 내부에서 실행
+mount -t devfs devfs "${WORK_DIR}/rootfs/dev"
+chroot "${WORK_DIR}/rootfs" fc-cache -f -v 2>/dev/null || true
+umount "${WORK_DIR}/rootfs/dev"
+
 
 echo "=== [5/6] 시스템 런타임 설정 (MATE-Terminal, Nemo, uutils, Fcitx5 한글 프리셋) ==="
+
 cat << 'EOF' > "${WORK_DIR}/rootfs/etc/rc.conf"
 hostname="alphapress"
 zfs_enable="YES"
@@ -168,10 +244,10 @@ mkdir -p "${WORK_DIR}/rootfs/compat/linux/proc"
 
 cat << 'EOF' > "${WORK_DIR}/rootfs/etc/rc.local"
 #!/bin/sh
-flatpak remote-add --if-not-exists flathub https://flathub.org
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak install -y flathub io.github.kolunmi.Bazaar
 flatpak install -y flathub io.github.mclab7.MissionCenter
-ln -sf /var/lib/flatpak/exports/share/applications/* /usr/local/share/applications/
+ln -sf /var/lib/flatpak/exports/share/applications/* /usr/local/share/applications/ 2>/dev/null || true
 EOF
 chmod +x "${WORK_DIR}/rootfs/etc/rc.local"
 
@@ -213,7 +289,10 @@ cat << 'EOF' > "${WORK_DIR}/rootfs/usr/local/etc/dconf/profile/user"
 user-db
 local
 EOF
-chroot "${WORK_DIR}/rootfs" dconf update
+
+mount -t devfs devfs "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
+chroot "${WORK_DIR}/rootfs" dconf update 2>/dev/null || true
+umount "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
 
 mkdir -p "${WORK_DIR}/rootfs/usr/local/bin"
 for cmd in ls cp mv rm mkdir rmdir cat echo chmod chown date test uname pwd whoami; do
@@ -224,11 +303,27 @@ for cmd in ls cp mv rm mkdir rmdir cat echo chmod chown date test uname pwd whoa
     fi
 done
 
+
 echo "=== [6/6] 불필요 파일 정리 및 부팅 하이브리드 ISO 컴파일 ==="
 rm -f "${WORK_DIR}/rootfs/etc/resolv.conf"
-pkg -c "${WORK_DIR}/rootfs" clean -y
 
-makefs -t cd9660 -o rockridge -o label="${DISTRO_NAME}" -o bootimage="i386;/boot/cdboot" -o no-emul-boot "${ISO_PATH}" "${WORK_DIR}/rootfs"
+pkg -o ABI="${HOST_ABI}" \
+    -o REPOS_DIR="${WORK_DIR}/rootfs/etc/pkg" \
+    -c "${WORK_DIR}/rootfs" \
+    clean -y 2>/dev/null || true
+
+umount -f "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
+umount -f "${WORK_DIR}/rootfs/proc" 2>/dev/null || true
+umount -f "${WORK_DIR}/rootfs/compat/linux/proc" 2>/dev/null || true
+
+echo "-> ISO 이미지 생성 중: ${ISO_PATH}"
+makefs -t cd9660 \
+    -o rockridge \
+    -o label="${DISTRO_NAME}" \
+    -o bootimage="i386;${WORK_DIR}/rootfs/boot/cdboot" \
+    -o no-emul-boot \
+    "${ISO_PATH}" \
+    "${WORK_DIR}/rootfs"
 
 echo "=============================================================================="
 echo "🎉 Ultimate 데스크탑 배포판 ISO 빌드가 끝났습니다!"
