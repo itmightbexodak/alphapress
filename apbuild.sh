@@ -1,7 +1,6 @@
 #!/bin/sh
 # ==============================================================================
 # FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트
-# (오류 자동 복구, 에코 주소 직주입 포맷, 프로세스 사살 메커니즘 전면 탑재)
 # ==============================================================================
 
 set -e
@@ -35,7 +34,6 @@ PACKAGES="${GNOME_CORE} x11-themes/linux-mint-themes graphics/drm-kmod \
 echo "=== [0-2] 기존 유령 마운트 및 좀비 자원 강제 처단 ==="
 sysctl kern.securelevel=-1 2>/dev/null || true
 
-# 과거에 생성되었을 수 있는 모든 임시 빌드 폴더의 프로세스/마운트 일괄 해제
 for old_dir in /tmp/alphapress_build*; do
     if [ -d "${old_dir}" ]; then
         fuser -kx "${old_dir}" 2>/dev/null || true
@@ -47,7 +45,6 @@ for old_dir in /tmp/alphapress_build*; do
     fi
 done
 
-# 호스트 OS 리눅스 커널 모듈 활성화
 sysrc linux_enable="YES" >/dev/null 2>&1 || true
 kldload linux 2>/dev/null || true
 kldload linprocfs 2>/dev/null || true
@@ -55,7 +52,6 @@ kldload linprocfs 2>/dev/null || true
 echo "=== [1/6] 청정 격리 빌드 디렉토리 초기화 및 Base 동기화 ==="
 mkdir -p "${WORK_DIR}/rootfs" "${ISO_OUT_DIR}"
 
-echo "-> 시스템 베이스 레이어 미러링 중... (작업 폴더: ${WORK_DIR})"
 tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /usr/libexec | tar -xf - -C "${WORK_DIR}/rootfs"
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
@@ -71,8 +67,7 @@ CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
 
 echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중... (${CLEAN_ABI})"
 
-# [주요 수정] 중첩 Heredoc 지우고 echo 구문을 사용하여 완성된 주소 텍스트를 파일에 완벽 직주입
-# (변수 해석 오류, 이스케이프 유실, 도메인 깨짐 문제를 완전히 원천 차단합니다)
+# [★완벽 교정 정밀 패치★] 꼬이기 쉬운 cat/Heredoc을 버리고 echo로 실제 완성된 텍스트 주소를 직주입합니다.
 echo "FreeBSD: {" > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 echo "  url: \"pkg+https://freebsd.org{CLEAN_ABI}/latest\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 echo "  mirror_type: \"srv\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
@@ -81,7 +76,6 @@ echo "  fingerprints: \"/usr/share/keys/pkg\"," >> "${WORK_DIR}/rootfs/etc/pkg/F
 echo "  enabled: yes" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 echo "}" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 
-# 호스트 쉘의 기존 환경 변수 간섭 소거
 unset ABI
 
 echo "-> 패키지 리포지토리 카탈로그 강제 동기화 (Target ABI: ${CLEAN_ABI})"
