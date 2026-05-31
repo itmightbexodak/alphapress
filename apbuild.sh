@@ -60,21 +60,31 @@ tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
+# 1. 독립 네트워크 해제를 위한 DNS 복사 및 디렉토리 빌드
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
-
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg"
+mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
+
+# 2. 호스트의 리포지토리 원본 설정 복사
 if [ -f /etc/pkg/FreeBSD.conf ]; then
     cp /etc/pkg/FreeBSD.conf "${WORK_DIR}/rootfs/etc/pkg/"
 fi
-mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-UNAME_r=$(uname -r)
-export ABI="FreeBSD:${UNAME_r%%-*}:${ABI_ARCH:-$(uname -p)}"
-echo "-> 패키지 리포지토리 강제 동기화 (Target ABI: ${ABI})..."
-pkg -c "${WORK_DIR}/rootfs" update -f
+# 3. [오류 완전 수정] FreeBSD 15에 맞춤화된 소수점 제거 정수형 ABI 포맷 강제 변환
+# (15.0-CURRENT 등의 문자열에서 소수점 이하 및 접미사를 정밀 추출하여 15로 정형화)
+HOST_VERSION=$(uname -r | cut -d'.' -f1)
+HOST_ARCH=$(uname -p)
+CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
 
-echo "-> 패키지 일괄 설치 진행..."
-pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
+echo "-> FreeBSD 15 규격 ABI 적용 및 구조체 강제 우회 (ABI: ${CLEAN_ABI})"
+
+# 4. 환경 변수 간섭을 방지하기 위해 unset 처리 후 pkg 내부 -o 인자로 명시적 주입 실행
+unset ABI
+pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" update -f
+
+echo "-> 패키지 일괄 설치 진행 (Target: ${CLEAN_ABI})..."
+pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" install -y ${PACKAGES}
+
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
