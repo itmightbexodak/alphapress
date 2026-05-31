@@ -31,10 +31,29 @@ tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
+# 1. 네트워크 연결을 위한 DNS 정보 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
+
+# 2. 호스트의 pkg 저장소 설정 파일을 Chroot 내부로 그대로 복사 (가장 중요)
+mkdir -p "${WORK_DIR}/rootfs/etc/pkg"
+if [ -f /etc/pkg/FreeBSD.conf ]; then
+    cp /etc/pkg/FreeBSD.conf "${WORK_DIR}/rootfs/etc/pkg/"
+fi
+
+# 3. Chroot 환경 내부의 패키지 데이터베이스 디렉토리 생성
 mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
-pkg -c "${WORK_DIR}/rootfs" update
+
+# 4. 호스트 커널의 ABI 환경변수를 전달하여 원격 저장소 강제 업데이트 및 동기화
+# (FreeBSD 버전 불일치로 인한 패키지 누락 원천 차단)
+UNAME_r=$(uname -r)
+export ABI="FreeBSD:${UNAME_r%%-*}:${ABI_ARCH:-$(uname -p)}"
+
+echo "-> 패키지 리포지토리 강제 동기화 중 (ABI: ${ABI})..."
+pkg -c "${WORK_DIR}/rootfs" update -f
+
+echo "-> 패키지 일괄 설치 진행 중..."
 pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
+
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 echo "-> 셸 환경 고도화 작업 중..."
