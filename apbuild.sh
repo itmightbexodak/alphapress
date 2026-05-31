@@ -18,10 +18,6 @@ WORK_DIR="/tmp/alphapress_build_${TIMESTAMP}"
 ISO_OUT_DIR="/tmp/alphapress_out_${TIMESTAMP}"
 ISO_PATH="${ISO_OUT_DIR}/${DISTRO_NAME}-Desktop.iso"
 
-# ================================================================
-# 핵심 수정: Ports 경로(category/name) → pkg 패키지 이름으로 변경
-# pkg install 은 패키지 이름만 인식함 (카테고리 경로 불가)
-# ================================================================
 GNOME_CORE="gnome-shell gdm mutter gnome-menus gnome-session \
             gnome-calendar gnome-calculator gnome-font-viewer \
             gnome-text-editor gnome-characters gnome-weather \
@@ -99,7 +95,7 @@ HOST_OSVERSION=$(sysctl -n kern.osreldate 2>/dev/null || echo "1500000")
 echo "-> 감지된 호스트 ABI: ${HOST_ABI}"
 echo "-> 감지된 호스트 OSVERSION: ${HOST_OSVERSION}"
 
-# pkg.conf 에 ABI와 OSVERSION 명시적 고정
+# pkg.conf 작성 (chroot 내부에서 읽힘)
 cat > "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf" << PKGEOF
 ABI = "${HOST_ABI}";
 OSVERSION = ${HOST_OSVERSION};
@@ -107,9 +103,6 @@ REPOS_DIR = ["/etc/pkg/"];
 PKG_DBDIR = "/var/db/pkg";
 PKG_CACHEDIR = "/var/cache/pkg";
 PKGEOF
-
-echo "-> 설정된 pkg.conf 확인:"
-cat "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf"
 
 # 저장소 설정 파일 작성
 cat > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf" << NETEOF
@@ -122,23 +115,43 @@ FreeBSD: {
 }
 NETEOF
 
-echo "-> 설정된 저장소 URL 확인:"
+echo "-> pkg.conf 확인:"
+cat "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf"
+echo "-> FreeBSD.conf 확인:"
 cat "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 
-# 호스트 환경변수 간섭 완전 차단
-unset ABI
-unset CLEAN_ABI
-unset PKG_DBDIR
-unset PKG_CACHEDIR
+# ================================================================
+# 핵심 수정: pkg -c 대신 실제 chroot 내부에서 pkg 직접 실행
+# chroot 안에서 실행해야 pkg.conf, 저장소 설정이 정확히 적용됨
+# ================================================================
 
-echo "-> 패키지 리포지토리 카탈로그 강제 동기화 진행..."
-pkg -c "${WORK_DIR}/rootfs" update -f
+# devfs 마운트 (네트워크 소켓 접근에 필요)
+mount -t devfs devfs "${WORK_DIR}/rootfs/dev"
 
-echo "-> 설치 가능한 패키지 목록 확인 (디버그용)..."
-pkg -c "${WORK_DIR}/rootfs" search gnome-shell | head -5 || true
+echo "-> chroot 내부에서 pkg 부트스트랩 및 패키지 설치 시작..."
+chroot "${WORK_DIR}/rootfs" /bin/sh << CHROOTEOF
+set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root
 
-echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
-pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
+echo "[chroot] pkg 부트스트랩 실행..."
+ASSUME_ALWAYS_YES=yes pkg bootstrap -f
+
+echo "[chroot] 저장소 설정 확인..."
+cat /usr/local/etc/pkg.conf
+cat /etc/pkg/FreeBSD.conf
+
+echo "[chroot] 저장소 카탈로그 동기화..."
+pkg update -f
+
+echo "[chroot] 저장소 연결 테스트..."
+pkg search gnome-shell | head -3
+
+echo "[chroot] 전체 패키지 설치..."
+pkg install -y ${PACKAGES}
+CHROOTEOF
+
+umount "${WORK_DIR}/rootfs/dev"
 
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
@@ -231,6 +244,7 @@ export GTK_IM_MODULE=fcitx
 export QT_IM_MODULE=fcitx
 EOF
 
+SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
 cat << 'EOF' >> "${SKEL_DIR}/.zshrc"
 export LANG=ko_KR.UTF-8
 export LC_ALL=ko_KR.UTF-8
@@ -316,7 +330,9 @@ done
 echo "=== [6/6] 불필요 파일 정리 및 부팅 하이브리드 ISO 컴파일 ==="
 rm -f "${WORK_DIR}/rootfs/etc/resolv.conf"
 
-pkg -c "${WORK_DIR}/rootfs" clean -y 2>/dev/null || true
+mount -t devfs devfs "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
+chroot "${WORK_DIR}/rootfs" pkg clean -y 2>/dev/null || true
+umount "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
 
 umount -f "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
 umount -f "${WORK_DIR}/rootfs/proc" 2>/dev/null || true
