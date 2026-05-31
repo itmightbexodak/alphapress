@@ -76,22 +76,38 @@ echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드
 # DNS 설정 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
 
-# pkg 저장소 디렉토리 생성
+# pkg 저장소 및 키 디렉토리 생성
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg"
 mkdir -p "${WORK_DIR}/rootfs/usr/share/keys/pkg/trusted"
 mkdir -p "${WORK_DIR}/rootfs/usr/share/keys/pkg/revoked"
+mkdir -p "${WORK_DIR}/rootfs/usr/local/etc"
+mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
+mkdir -p "${WORK_DIR}/rootfs/var/cache/pkg"
 
-# 호스트의 pkg 키 복사 (서명 검증에 필요)
+# 호스트의 pkg 키 복사
 if [ -d "/usr/share/keys/pkg" ]; then
     cp -R /usr/share/keys/pkg/ "${WORK_DIR}/rootfs/usr/share/keys/"
 fi
 
-echo "-> FreeBSD 패키지 저장소 URL 하드코딩 설정 중..."
-
-# 호스트 ABI 자동 감지
+# 호스트 ABI 및 OSVERSION 자동 감지
 HOST_ABI=$(pkg config ABI 2>/dev/null || echo "FreeBSD:15:amd64")
+HOST_OSVERSION=$(sysctl -n kern.osreldate 2>/dev/null || echo "1500000")
 echo "-> 감지된 호스트 ABI: ${HOST_ABI}"
+echo "-> 감지된 호스트 OSVERSION: ${HOST_OSVERSION}"
 
+# pkg.conf 에 ABI와 OSVERSION을 명시적으로 고정
+cat > "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf" << PKGEOF
+ABI = "${HOST_ABI}";
+OSVERSION = ${HOST_OSVERSION};
+REPOS_DIR = ["/etc/pkg/"];
+PKG_DBDIR = "/var/db/pkg";
+PKG_CACHEDIR = "/var/cache/pkg";
+PKGEOF
+
+echo "-> 설정된 pkg.conf 확인:"
+cat "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf"
+
+# 저장소 설정 파일 작성
 cat > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf" << NETEOF
 FreeBSD: {
   url: "https://pkg.freebsd.org/${HOST_ABI}/latest",
@@ -105,30 +121,23 @@ NETEOF
 echo "-> 설정된 저장소 URL 확인:"
 cat "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 
-# 호스트 환경변수 간섭 차단
+# 호스트 환경변수 간섭 완전 차단
 unset ABI
 unset CLEAN_ABI
 unset PKG_DBDIR
 unset PKG_CACHEDIR
 
 echo "-> 패키지 리포지토리 카탈로그 강제 동기화 진행..."
-pkg -o ABI="${HOST_ABI}" \
-    -o REPOS_DIR="${WORK_DIR}/rootfs/etc/pkg" \
-    -c "${WORK_DIR}/rootfs" \
-    update -f
+pkg -c "${WORK_DIR}/rootfs" update -f
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
-pkg -o ABI="${HOST_ABI}" \
-    -o REPOS_DIR="${WORK_DIR}/rootfs/etc/pkg" \
-    -c "${WORK_DIR}/rootfs" \
-    install -y ${PACKAGES}
+pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
 
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
 mkdir -p "${SKEL_DIR}"
 
-# Oh-My-Zsh 공식 저장소에서 클론
 git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh.git "${SKEL_DIR}/.oh-my-zsh"
 
 cat << 'EOF' > "${SKEL_DIR}/.zshrc"
@@ -148,17 +157,13 @@ pwd_mkdb -d "${WORK_DIR}/rootfs/etc" "${WORK_DIR}/rootfs/etc/master.passwd"
 echo "=== [4/6] 오픈소스 Hatter 아이콘 실시간 클론 및 이식 ==="
 mkdir -p "${WORK_DIR}/rootfs/usr/local/share/icons"
 
-# Hatter 아이콘 공식 저장소 클론
 git clone --depth 1 https://github.com/Mibea/Hatter.git "${WORK_DIR}/tmp_hatter"
 
 HATTER_DIR="${WORK_DIR}/rootfs/usr/local/share/icons/Hatter"
 
-# 저장소 내부 구조에 따라 분기 처리
 if [ -d "${WORK_DIR}/tmp_hatter/Hatter" ]; then
-    # 저장소 루트 아래에 Hatter 폴더가 별도로 있는 경우
     mv "${WORK_DIR}/tmp_hatter/Hatter" "${HATTER_DIR}"
 else
-    # 저장소 자체가 Hatter 아이콘 테마인 경우
     mv "${WORK_DIR}/tmp_hatter" "${HATTER_DIR}"
 fi
 
@@ -168,12 +173,11 @@ echo "-> Hatter 아이콘 설치 완료: ${HATTER_DIR}"
 
 echo "=== [4-2/6] Pretendard 및 D2Coding 폰트 다운로드 및 시스템 글꼴 등록 ==="
 
-# Pretendard 폰트
 PRETENDARD_DIR="${WORK_DIR}/rootfs/usr/local/share/fonts/Pretendard"
 mkdir -p "${PRETENDARD_DIR}"
 curl -L -o "${WORK_DIR}/Pretendard.zip" \
     "https://github.com/orioncactus/pretendard/releases/latest/download/Pretendard-1.3.9.zip" \
-    || echo "⚠️  Pretendard 다운로드 실패 - 수동으로 설치하세요."
+    || echo "⚠️  Pretendard 다운로드 실패"
 
 if [ -f "${WORK_DIR}/Pretendard.zip" ]; then
     unzip -q "${WORK_DIR}/Pretendard.zip" -d "${WORK_DIR}/pretendard_extracted" || true
@@ -182,12 +186,11 @@ if [ -f "${WORK_DIR}/Pretendard.zip" ]; then
     rm -rf "${WORK_DIR}/Pretendard.zip" "${WORK_DIR}/pretendard_extracted"
 fi
 
-# D2Coding 폰트
 D2CODING_DIR="${WORK_DIR}/rootfs/usr/local/share/fonts/D2Coding"
 mkdir -p "${D2CODING_DIR}"
 curl -L -o "${WORK_DIR}/D2Coding.zip" \
     "https://github.com/naver/d2codingfont/releases/latest/download/D2Coding-Ver1.3.2-20180524.zip" \
-    || echo "⚠️  D2Coding 다운로드 실패 - 수동으로 설치하세요."
+    || echo "⚠️  D2Coding 다운로드 실패"
 
 if [ -f "${WORK_DIR}/D2Coding.zip" ]; then
     unzip -q "${WORK_DIR}/D2Coding.zip" -d "${WORK_DIR}/d2coding_extracted" || true
@@ -196,7 +199,6 @@ if [ -f "${WORK_DIR}/D2Coding.zip" ]; then
     rm -rf "${WORK_DIR}/D2Coding.zip" "${WORK_DIR}/d2coding_extracted"
 fi
 
-# fc-cache는 chroot 내부에서 실행
 mount -t devfs devfs "${WORK_DIR}/rootfs/dev"
 chroot "${WORK_DIR}/rootfs" fc-cache -f -v 2>/dev/null || true
 umount "${WORK_DIR}/rootfs/dev"
@@ -307,10 +309,7 @@ done
 echo "=== [6/6] 불필요 파일 정리 및 부팅 하이브리드 ISO 컴파일 ==="
 rm -f "${WORK_DIR}/rootfs/etc/resolv.conf"
 
-pkg -o ABI="${HOST_ABI}" \
-    -o REPOS_DIR="${WORK_DIR}/rootfs/etc/pkg" \
-    -c "${WORK_DIR}/rootfs" \
-    clean -y 2>/dev/null || true
+pkg -c "${WORK_DIR}/rootfs" clean -y 2>/dev/null || true
 
 umount -f "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
 umount -f "${WORK_DIR}/rootfs/proc" 2>/dev/null || true
