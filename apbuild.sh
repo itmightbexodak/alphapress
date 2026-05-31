@@ -70,13 +70,13 @@ HOST_VERSION=$(uname -r | cut -d'.' -f1)
 HOST_ARCH=$(uname -p)
 CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
 
-echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 재구축 중..."
+echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중..."
 
-# 3. [오류 수정] 도메인과 ABI 변수 사이에 완벽한 슬래시(/) 고정 및 이스케이프 보정
-# (싱글 쿼터 'EOF'를 사용하여 내부의 ${ABI} 문자열이 온전히 파일에 텍스트로 보존되도록 조치)
-cat << 'EOF' > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+# 3. [오류 완전 수정] ${ABI} 변수 대입을 포기하고 파싱된 고유 주소를 파일에 직주입
+# (싱글 쿼터 없이 일반 EOF를 사용하여, 쉘 스크립트가 실행될 때 CLEAN_ABI 값을 주소에 완전히 박아넣습니다)
+cat << EOF > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 FreeBSD: {
-  url: "pkg+https://freebsd.org{ABI}/latest",
+  url: "pkg+https://freebsd.org{CLEAN_ABI}/latest",
   mirror_type: "srv",
   signature_type: "fingerprints",
   fingerprints: "/usr/share/keys/pkg",
@@ -92,6 +92,7 @@ pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" update -f
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
 pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" install -y ${PACKAGES}
+
 
 
 
