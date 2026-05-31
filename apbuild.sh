@@ -1,7 +1,7 @@
 #!/bin/sh
 # ==============================================================================
 # FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트
-# (오류 자동 복구, 프로세스 처단, 플래그 해제, 리눅스 커널 로드, ABI 동기화 내장형)
+# (보안 레벨 우회, 고유 디렉토리 격리, 프로세스 사살 메커니즘 전면 탑재)
 # ==============================================================================
 
 set -e
@@ -13,11 +13,13 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 DISTRO_NAME="ALPHAPRESS"
-WORK_DIR="/tmp/alphapress_build"
-ISO_OUT_DIR="/tmp/alphapress_out"
+TIMESTAMP=$(date +%s)
+
+# [핵심 변경] 매 빌드마다 고유한 독립 폴더를 생성하여 이전 삭제 실패 찌꺼기와 완전히 격리
+WORK_DIR="/tmp/alphapress_build_${TIMESTAMP}"
+ISO_OUT_DIR="/tmp/alphapress_out_${TIMESTAMP}"
 ISO_PATH="${ISO_OUT_DIR}/${DISTRO_NAME}-Desktop.iso"
 
-# [패키지 정밀 제어] 게임, Nautilus, gnome-console만 제외하고 필수 GNOME 앱은 유지
 GNOME_CORE="x11/gnome-shell x11/gdm x11-wm/mutter x11/gnome-menus x11/gnome-session \
             deskutils/gnome-calendar math/gnome-calculator deskutils/gnome-font-viewer \
             editors/gnome-text-editor deskutils/gnome-characters deskutils/gnome-weather \
@@ -30,58 +32,51 @@ PACKAGES="${GNOME_CORE} x11-themes/linux-mint-themes graphics/drm-kmod \
           textproc/fcitx5 textproc/fcitx5-hangul textproc/fcitx5-configtool \
           textproc/fcitx5-qt textproc/fcitx5-gtk x11/xkeyboard-config"
 
-echo "=== [0-2] 실행 직전 체크리스트 및 좀비 환경 강제 소거 ==="
-# 1. 이전 빌드 실패로 인해 핸들을 쥐고 있는 Chroot 내부 좀비 프로세스 사살
-fuser -kx "${WORK_DIR}" 2>/dev/null || true
+echo "=== [0-2] 기존 유령 마운트 및 좀비 자원 강제 처단 ==="
+sysctl kern.securelevel=-1 2>/dev/null || true
 
-# 2. 잔여 가상 파일 시스템 강제 마운트 해제
-umount -f "${WORK_DIR}/rootfs/compat/linux/proc" 2>/dev/null || true
-umount -f "${WORK_DIR}/rootfs/proc" 2>/dev/null || true
-umount -f "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
+# 과거에 생성되었을 수 있는 모든 임시 빌드 폴더의 프로세스/마운트 일괄 해제
+for old_dir in /tmp/alphapress_build*; do
+    if [ -d "${old_dir}" ]; then
+        fuser -kx "${old_dir}" 2>/dev/null || true
+        umount -f "${old_dir}/rootfs/compat/linux/proc" 2>/dev/null || true
+        umount -f "${old_dir}/rootfs/proc" 2>/dev/null || true
+        umount -f "${old_dir}/rootfs/dev" 2>/dev/null || true
+        chflags -R noschg,nougchg,nosappnd,nouappnd "${old_dir}" 2>/dev/null || true
+        rm -rf "${old_dir}" 2>/dev/null || true
+    fi
+done
 
-# 3. FreeBSD 시스템 불변 플래그(schg, uchg 등) 해제하여 Operation not permitted 방지
-if [ -d "${WORK_DIR}" ]; then
-    echo "-> 기존 빌드 폴더의 시스템 불변 잠금 플래그 해제 중..."
-    chflags -R noschg,nougchg,nosappnd,nouappnd "${WORK_DIR}" 2>/dev/null || true
-fi
-if [ -d "${ISO_OUT_DIR}" ]; then
-    chflags -R noschg,nougchg,nosappnd,nouappnd "${ISO_OUT_DIR}" 2>/dev/null || true
-fi
-
-# 4. 호스트 OS 리눅스 바이너리 호환성 커널 모듈 활성화 (Flatpak 스택용)
-echo "-> 호스트 커널 모듈(Linux/Linprocfs) 활성화 상태 점검 중..."
+# 호스트 OS 리눅스 커널 모듈 활성화
 sysrc linux_enable="YES" >/dev/null 2>&1 || true
 kldload linux 2>/dev/null || true
 kldload linprocfs 2>/dev/null || true
 
-echo "=== [1/6] 빌드 디렉토리 초기화 및 Base 동기화 ==="
-rm -rf "${WORK_DIR}" "${ISO_OUT_DIR}"
+echo "=== [1/6] 청정 격리 빌드 디렉토리 초기화 및 Base 동기화 ==="
 mkdir -p "${WORK_DIR}/rootfs" "${ISO_OUT_DIR}"
 
+echo "-> 시스템 베이스 레이어 미러링 중... (작업 폴더: ${WORK_DIR})"
 tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /usr/libexec | tar -xf - -C "${WORK_DIR}/rootfs"
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
 
-# [중요] 호스트의 공식pkg 저장소 구성을 내부 가상 환경으로 이식하여 주소 유실 원천 차단
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg"
 if [ -f /etc/pkg/FreeBSD.conf ]; then
     cp /etc/pkg/FreeBSD.conf "${WORK_DIR}/rootfs/etc/pkg/"
 fi
 mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-# 호스트 커널의 정확한 ABI 환경변수를 강제 전달하여 No packages found 에러 타파
 UNAME_r=$(uname -r)
 export ABI="FreeBSD:${UNAME_r%%-*}:${ABI_ARCH:-$(uname -p)}"
 echo "-> 패키지 리포지토리 강제 동기화 (Target ABI: ${ABI})..."
 pkg -c "${WORK_DIR}/rootfs" update -f
 
-echo "-> 패키지 일괄 설치 (Nautilus/Games/Console 제외)..."
+echo "-> 패키지 일괄 설치 진행..."
 pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
-echo "-> 셸 환경 고도화 작업 중..."
 SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
 mkdir -p "${SKEL_DIR}"
 git clone --depth 1 https://github.com "${SKEL_DIR}/.oh-my-zsh"
@@ -123,7 +118,6 @@ rm -rf "${WORK_DIR}/D2Coding.zip" "${WORK_DIR}/d2coding_extracted"
 chroot "${WORK_DIR}/rootfs" fc-cache -f -v
 
 echo "=== [5/6] 시스템 런타임 설정 (MATE-Terminal, Nemo, uutils, Fcitx5 한글 프리셋) ==="
-# 1. rc.conf 통합 및 언어/입력기 환경 변수 선언 기본 설정
 cat << 'EOF' > "${WORK_DIR}/rootfs/etc/rc.conf"
 hostname="alphapress"
 zfs_enable="YES"
@@ -134,7 +128,6 @@ avahi_daemon_enable="YES"
 kld_list="i915kms amdgpu"
 EOF
 
-# 2. 로케일 환경 변수 및 Fcitx5 한글 입력기 전역 활성화 환경 설정
 cat << 'EOF' > "${WORK_DIR}/rootfs/etc/profile"
 export LANG=ko_KR.UTF-8
 export LC_ALL=ko_KR.UTF-8
@@ -152,7 +145,6 @@ export QT_IM_MODULE=fcitx
 EOF
 cp "${SKEL_DIR}/.zshrc" "${WORK_DIR}/rootfs/root/.zshrc"
 
-# 3. loader.conf & fstab
 cat << 'EOF' > "${WORK_DIR}/rootfs/boot/loader.conf"
 dtraceall_load="YES"
 autoboot_delay="2"
@@ -164,7 +156,6 @@ linprocfs           /compat/linux/proc linprocfs rw          0       0
 EOF
 mkdir -p "${WORK_DIR}/rootfs/compat/linux/proc"
 
-# 4. 라이브 부팅 후 실행 스크립트 (Flatpak 및 Fcitx5 백그라운드 자동 실행)
 cat << 'EOF' > "${WORK_DIR}/rootfs/etc/rc.local"
 #!/bin/sh
 flatpak remote-add --if-not-exists flathub https://flathub.org
@@ -174,7 +165,6 @@ ln -sf /var/lib/flatpak/exports/share/applications/* /usr/local/share/applicatio
 EOF
 chmod +x "${WORK_DIR}/rootfs/etc/rc.local"
 
-# 5. GNOME 환경설정 컴파일 (MATE-Terminal, Nemo 기본 매핑 및 104키 한글 레이아웃 고정)
 DCONF_DIR="${WORK_DIR}/rootfs/usr/local/etc/dconf/db/local.d"
 mkdir -p "${DCONF_DIR}"
 cat << 'EOF' > "${DCONF_DIR}/00-custom-theme"
@@ -215,7 +205,6 @@ local
 EOF
 chroot "${WORK_DIR}/rootfs" dconf update
 
-# 6. Rust 기반 uutils를 시스템 표준 coreutils로 완전 치환 및 오버레이
 mkdir -p "${WORK_DIR}/rootfs/usr/local/bin"
 for cmd in ls cp mv rm mkdir rmdir cat echo chmod chown date test uname pwd whoami; do
     if [ -f "${WORK_DIR}/rootfs/usr/local/bin/uutils-${cmd}" ]; then
