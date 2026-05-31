@@ -18,17 +18,21 @@ WORK_DIR="/tmp/alphapress_build_${TIMESTAMP}"
 ISO_OUT_DIR="/tmp/alphapress_out_${TIMESTAMP}"
 ISO_PATH="${ISO_OUT_DIR}/${DISTRO_NAME}-Desktop.iso"
 
-GNOME_CORE="x11/gnome-shell x11/gdm x11-wm/mutter x11/gnome-menus x11/gnome-session \
-            deskutils/gnome-calendar math/gnome-calculator deskutils/gnome-font-viewer \
-            editors/gnome-text-editor deskutils/gnome-characters deskutils/gnome-weather \
-            deskutils/gnome-clocks deskutils/gnome-maps graphics/gnome-screenshot \
-            sysutils/gnome-control-center sysutils/gnome-settings-daemon sysutils/gnome-system-monitor"
+# ================================================================
+# 핵심 수정: Ports 경로(category/name) → pkg 패키지 이름으로 변경
+# pkg install 은 패키지 이름만 인식함 (카테고리 경로 불가)
+# ================================================================
+GNOME_CORE="gnome-shell gdm mutter gnome-menus gnome-session \
+            gnome-calendar gnome-calculator gnome-font-viewer \
+            gnome-text-editor gnome-characters gnome-weather \
+            gnome-clocks gnome-maps gnome-screenshot \
+            gnome-control-center gnome-settings-daemon gnome-system-monitor"
 
-PACKAGES="${GNOME_CORE} x11-themes/linux-mint-themes graphics/drm-kmod \
-          audio/pipewire git shells/zsh sysutils/flatpak sysutils/uutils-coreutils \
-          ftp/curl archivers/unzip x11/mate-terminal x11-filemanagers/nemo \
-          textproc/fcitx5 textproc/fcitx5-hangul textproc/fcitx5-configtool \
-          textproc/fcitx5-qt textproc/fcitx5-gtk x11/xkeyboard-config"
+PACKAGES="${GNOME_CORE} linux-mint-themes drm-kmod \
+          pipewire git zsh flatpak uutils-coreutils \
+          curl unzip mate-terminal nemo \
+          fcitx5 fcitx5-hangul fcitx5-configtool \
+          fcitx5-qt5 fcitx5-gtk xkeyboard-config"
 
 echo "=== [0-2] 기존 유령 마운트 및 좀비 자원 강제 처단 ==="
 sysctl kern.securelevel=-1 2>/dev/null || true
@@ -95,7 +99,7 @@ HOST_OSVERSION=$(sysctl -n kern.osreldate 2>/dev/null || echo "1500000")
 echo "-> 감지된 호스트 ABI: ${HOST_ABI}"
 echo "-> 감지된 호스트 OSVERSION: ${HOST_OSVERSION}"
 
-# pkg.conf 에 ABI와 OSVERSION을 명시적으로 고정
+# pkg.conf 에 ABI와 OSVERSION 명시적 고정
 cat > "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf" << PKGEOF
 ABI = "${HOST_ABI}";
 OSVERSION = ${HOST_OSVERSION};
@@ -129,6 +133,9 @@ unset PKG_CACHEDIR
 
 echo "-> 패키지 리포지토리 카탈로그 강제 동기화 진행..."
 pkg -c "${WORK_DIR}/rootfs" update -f
+
+echo "-> 설치 가능한 패키지 목록 확인 (디버그용)..."
+pkg -c "${WORK_DIR}/rootfs" search gnome-shell | head -5 || true
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
 pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
