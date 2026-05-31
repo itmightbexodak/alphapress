@@ -1,16 +1,23 @@
 #!/bin/sh
 # ==============================================================================
 # FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트
+# (오류 자동 복구, 프로세스 처단, 플래그 해제, 리눅스 커널 로드, ABI 동기화 내장형)
 # ==============================================================================
 
 set -e
+
+# [0-1] root 권한 체크
+if [ "$(id -u)" -ne 0 ]; then
+    echo "❌ 에러: 이 스크립트는 반드시 root 권한(sudo)으로 실행해야 합니다."
+    exit 1
+fi
 
 DISTRO_NAME="ALPHAPRESS"
 WORK_DIR="/tmp/alphapress_build"
 ISO_OUT_DIR="/tmp/alphapress_out"
 ISO_PATH="${ISO_OUT_DIR}/${DISTRO_NAME}-Desktop.iso"
 
-# [패키지 정밀 제어] 게임, Nautilus, gnome-console만 제외하고 필수 GNOME 앱(캘린더, 계산기 등)은 유지
+# [패키지 정밀 제어] 게임, Nautilus, gnome-console만 제외하고 필수 GNOME 앱은 유지
 GNOME_CORE="x11/gnome-shell x11/gdm x11-wm/mutter x11/gnome-menus x11/gnome-session \
             deskutils/gnome-calendar math/gnome-calculator deskutils/gnome-font-viewer \
             editors/gnome-text-editor deskutils/gnome-characters deskutils/gnome-weather \
@@ -23,6 +30,30 @@ PACKAGES="${GNOME_CORE} x11-themes/linux-mint-themes graphics/drm-kmod \
           textproc/fcitx5 textproc/fcitx5-hangul textproc/fcitx5-configtool \
           textproc/fcitx5-qt textproc/fcitx5-gtk x11/xkeyboard-config"
 
+echo "=== [0-2] 실행 직전 체크리스트 및 좀비 환경 강제 소거 ==="
+# 1. 이전 빌드 실패로 인해 핸들을 쥐고 있는 Chroot 내부 좀비 프로세스 사살
+fuser -kx "${WORK_DIR}" 2>/dev/null || true
+
+# 2. 잔여 가상 파일 시스템 강제 마운트 해제
+umount -f "${WORK_DIR}/rootfs/compat/linux/proc" 2>/dev/null || true
+umount -f "${WORK_DIR}/rootfs/proc" 2>/dev/null || true
+umount -f "${WORK_DIR}/rootfs/dev" 2>/dev/null || true
+
+# 3. FreeBSD 시스템 불변 플래그(schg, uchg 등) 해제하여 Operation not permitted 방지
+if [ -d "${WORK_DIR}" ]; then
+    echo "-> 기존 빌드 폴더의 시스템 불변 잠금 플래그 해제 중..."
+    chflags -R noschg,nougchg,nosappnd,nouappnd "${WORK_DIR}" 2>/dev/null || true
+fi
+if [ -d "${ISO_OUT_DIR}" ]; then
+    chflags -R noschg,nougchg,nosappnd,nouappnd "${ISO_OUT_DIR}" 2>/dev/null || true
+fi
+
+# 4. 호스트 OS 리눅스 바이너리 호환성 커널 모듈 활성화 (Flatpak 스택용)
+echo "-> 호스트 커널 모듈(Linux/Linprocfs) 활성화 상태 점검 중..."
+sysrc linux_enable="YES" >/dev/null 2>&1 || true
+kldload linux 2>/dev/null || true
+kldload linprocfs 2>/dev/null || true
+
 echo "=== [1/6] 빌드 디렉토리 초기화 및 Base 동기화 ==="
 rm -rf "${WORK_DIR}" "${ISO_OUT_DIR}"
 mkdir -p "${WORK_DIR}/rootfs" "${ISO_OUT_DIR}"
@@ -31,29 +62,23 @@ tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
-# 1. 네트워크 연결을 위한 DNS 정보 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
 
-# 2. 호스트의 pkg 저장소 설정 파일을 Chroot 내부로 그대로 복사 (가장 중요)
+# [중요] 호스트의 공식pkg 저장소 구성을 내부 가상 환경으로 이식하여 주소 유실 원천 차단
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg"
 if [ -f /etc/pkg/FreeBSD.conf ]; then
     cp /etc/pkg/FreeBSD.conf "${WORK_DIR}/rootfs/etc/pkg/"
 fi
-
-# 3. Chroot 환경 내부의 패키지 데이터베이스 디렉토리 생성
 mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-# 4. 호스트 커널의 ABI 환경변수를 전달하여 원격 저장소 강제 업데이트 및 동기화
-# (FreeBSD 버전 불일치로 인한 패키지 누락 원천 차단)
+# 호스트 커널의 정확한 ABI 환경변수를 강제 전달하여 No packages found 에러 타파
 UNAME_r=$(uname -r)
 export ABI="FreeBSD:${UNAME_r%%-*}:${ABI_ARCH:-$(uname -p)}"
-
-echo "-> 패키지 리포지토리 강제 동기화 중 (ABI: ${ABI})..."
+echo "-> 패키지 리포지토리 강제 동기화 (Target ABI: ${ABI})..."
 pkg -c "${WORK_DIR}/rootfs" update -f
 
-echo "-> 패키지 일괄 설치 진행 중..."
+echo "-> 패키지 일괄 설치 (Nautilus/Games/Console 제외)..."
 pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
-
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 echo "-> 셸 환경 고도화 작업 중..."
@@ -175,7 +200,6 @@ xkb-options=['korean:ralt_hangul', 'korean:rctrl_hanja']
 show-desktop-icons=true
 EOF
 
-# GNOME 파일 관리자 기본 처리기를 Nemo로 완전히 연결하기 위한 mimeapps.list 배치
 MIME_DIR="${WORK_DIR}/rootfs/usr/local/share/applications"
 mkdir -p "${MIME_DIR}"
 cat << 'EOF' > "${MIME_DIR}/mimeapps.list"
@@ -184,7 +208,6 @@ inode/directory=nemo.desktop
 x-scheme-handler/file=nemo.desktop
 EOF
 
-# dconf 프로필 등록 및 DB 업데이트
 mkdir -p "${WORK_DIR}/rootfs/usr/local/etc/dconf/profile"
 cat << 'EOF' > "${WORK_DIR}/rootfs/usr/local/etc/dconf/profile/user"
 user-db
@@ -212,4 +235,3 @@ echo "==========================================================================
 echo "🎉 Ultimate 데스크탑 배포판 ISO 빌드가 끝났습니다!"
 echo "📍 생성된 파일 위치: ${ISO_PATH}"
 echo "=============================================================================="
-
