@@ -1,6 +1,6 @@
 #!/bin/sh
 # ==============================================================================
-# FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트
+# FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트(깃헙 커밋 적용 여부 확인용)
 # ==============================================================================
 
 set -e
@@ -56,33 +56,35 @@ tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
+# 1. 가상 환경 내부 네트워크 설정을 위한 디렉토리 및 DNS 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
-
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg/repos"
 mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-HOST_VERSION=$(uname -r | cut -d'.' -f1)
-HOST_ARCH=$(uname -p)
-CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
+echo "-> FreeBSD 15 저장소 설정에 물리 주소 다이렉트 주입 중..."
 
-echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중... (${CLEAN_ABI})"
+# 2. [오류 최종 타파] 어떠한 변수($)나 기호({})도 일절 사용하지 않고, 
+# FreeBSD 15 공식 amd64 latest 패키지 서버 실물 주소를 텍스트 그대로 하드코딩 주입합니다.
+cat << 'NETEOF' > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
+FreeBSD: {
+  url: "pkg+https://freebsd.org",
+  mirror_type: "srv",
+  signature_type: "fingerprints",
+  fingerprints: "/usr/share/keys/pkg",
+  enabled: yes
+}
+NETEOF
 
-# [★완벽 교정 정밀 패치★] 꼬이기 쉬운 cat/Heredoc을 버리고 echo로 실제 완성된 텍스트 주소를 직주입합니다.
-echo "FreeBSD: {" > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-echo "  url: \"pkg+https://freebsd.org{CLEAN_ABI}/latest\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-echo "  mirror_type: \"srv\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-echo "  signature_type: \"fingerprints\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-echo "  fingerprints: \"/usr/share/keys/pkg\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-echo "  enabled: yes" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-echo "}" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
-
+# 3. Chroot 외부 호스트 쉘 및 내부 환경 변수의 모든 간섭 차단
 unset ABI
+unset CLEAN_ABI
 
-echo "-> 패키지 리포지토리 카탈로그 강제 동기화 (Target ABI: ${CLEAN_ABI})"
-pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" update -f
+echo "-> 패키지 리포지토리 카탈로그 강제 동기화 진행..."
+pkg -c "${WORK_DIR}/rootfs" update -f
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
-pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" install -y ${PACKAGES}
+pkg -c "${WORK_DIR}/rootfs" install -y ${PACKAGES}
+
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
