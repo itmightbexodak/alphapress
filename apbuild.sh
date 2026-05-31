@@ -1,7 +1,7 @@
 #!/bin/sh
 # ==============================================================================
 # FreeBSD 기반 GNOME/Nemo + Oh-My-Zsh + Flatpak + Rust(uutils) + Fcitx5 한글 빌드 스크립트
-# (보안 레벨 우회, 고유 디렉토리 격리, 프로세스 사살 메커니즘 전면 탑재)
+# (오류 자동 복구, 에코 주소 직주입 포맷, 프로세스 사살 메커니즘 전면 탑재)
 # ==============================================================================
 
 set -e
@@ -15,7 +15,7 @@ fi
 DISTRO_NAME="ALPHAPRESS"
 TIMESTAMP=$(date +%s)
 
-# [핵심 변경] 매 빌드마다 고유한 독립 폴더를 생성하여 이전 삭제 실패 찌꺼기와 완전히 격리
+# 매 빌드마다 고유한 독립 폴더를 생성하여 이전 삭제 실패 찌꺼기와 완전히 격리
 WORK_DIR="/tmp/alphapress_build_${TIMESTAMP}"
 ISO_OUT_DIR="/tmp/alphapress_out_${TIMESTAMP}"
 ISO_PATH="${ISO_OUT_DIR}/${DISTRO_NAME}-Desktop.iso"
@@ -60,19 +60,18 @@ tar -cf - -C / /boot /bin /sbin /lib /libexec /etc /usr/bin /usr/sbin /usr/lib /
 mkdir -p "${WORK_DIR}/rootfs/dev" "${WORK_DIR}/rootfs/proc" "${WORK_DIR}/rootfs/root" "${WORK_DIR}/rootfs/tmp" "${WORK_DIR}/rootfs/var"
 
 echo "=== [2/6] 기본 패키지 및 폰트/의존성 일괄 원격 다운로드 ==="
-# 1. 가상 환경 내부 네트워크 설정을 위한 디렉토리 및 DNS 복사
 cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
+
 mkdir -p "${WORK_DIR}/rootfs/etc/pkg/repos"
 mkdir -p "${WORK_DIR}/rootfs/var/db/pkg"
 
-# 2. FreeBSD 15 정수형 ABI 포맷 강제 추출
 HOST_VERSION=$(uname -r | cut -d'.' -f1)
 HOST_ARCH=$(uname -p)
 CLEAN_ABI="FreeBSD:${HOST_VERSION}:${HOST_ARCH}"
 
-echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중..."
+echo "-> FreeBSD 15 전용 패키지 미러 저장소 주소 정밀 재구축 중... (${CLEAN_ABI})"
 
-# 3. [오류 완전 수정] cat 대신 echo 구문을 사용하여 완성된 주소 텍스트를 파일에 직주입
+# [주요 수정] 중첩 Heredoc 지우고 echo 구문을 사용하여 완성된 주소 텍스트를 파일에 완벽 직주입
 # (변수 해석 오류, 이스케이프 유실, 도메인 깨짐 문제를 완전히 원천 차단합니다)
 echo "FreeBSD: {" > "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 echo "  url: \"pkg+https://freebsd.org{CLEAN_ABI}/latest\"," >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
@@ -82,7 +81,7 @@ echo "  fingerprints: \"/usr/share/keys/pkg\"," >> "${WORK_DIR}/rootfs/etc/pkg/F
 echo "  enabled: yes" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 echo "}" >> "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 
-# 4. 호스트 쉘의 기존 환경 변수 간섭 소거
+# 호스트 쉘의 기존 환경 변수 간섭 소거
 unset ABI
 
 echo "-> 패키지 리포지토리 카탈로그 강제 동기화 (Target ABI: ${CLEAN_ABI})"
@@ -90,9 +89,6 @@ pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" update -f
 
 echo "-> 데스크톱 컴포넌트 일괄 원격 설치 진행 중..."
 pkg -c "${WORK_DIR}/rootfs" -o ABI="${CLEAN_ABI}" install -y ${PACKAGES}
-
-
-
 
 echo "=== [3/6] Oh-My-Zsh 설치 및 'bira' 테마 전역 디폴트 적용 ==="
 SKEL_DIR="${WORK_DIR}/rootfs/usr/share/skel"
