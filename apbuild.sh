@@ -89,19 +89,63 @@ if [ -d "/usr/share/keys/pkg" ]; then
     cp -R /usr/share/keys/pkg/ "${WORK_DIR}/rootfs/usr/share/keys/"
 fi
 
+# ================================================================
+# 핵심 수정: SSL 인증서 복사
+# chroot 내부에서 HTTPS 접속 시 신뢰할 인증서가 없으면
+# "No trusted certificates found." 오류 발생
+# 호스트의 SSL 인증서를 그대로 chroot 안으로 복사
+# ================================================================
+echo "-> SSL 인증서 chroot 내부로 복사 중..."
+
+# FreeBSD SSL 인증서 경로
+mkdir -p "${WORK_DIR}/rootfs/usr/local/share/certs"
+mkdir -p "${WORK_DIR}/rootfs/usr/local/etc/ssl"
+mkdir -p "${WORK_DIR}/rootfs/etc/ssl"
+
+# 인증서 번들 복사 (존재하는 경로 모두 시도)
+for cert_src in \
+    /usr/local/share/certs/ca-root-nss.crt \
+    /usr/local/etc/ssl/cert.pem \
+    /etc/ssl/cert.pem \
+    /etc/ssl/ca-bundle.crt; do
+    if [ -f "${cert_src}" ]; then
+        echo "  -> 복사: ${cert_src}"
+        cp "${cert_src}" "${WORK_DIR}/rootfs${cert_src}"
+    fi
+done
+
+# ca-root-nss가 없으면 호스트에서 먼저 설치 후 복사
+if [ ! -f "/usr/local/share/certs/ca-root-nss.crt" ]; then
+    echo "-> 호스트에 ca-root-nss 없음. 호스트에 설치 후 복사..."
+    pkg install -y ca_root_nss 2>/dev/null || true
+fi
+
+# 재시도: ca-root-nss 복사
+if [ -f "/usr/local/share/certs/ca-root-nss.crt" ]; then
+    cp "/usr/local/share/certs/ca-root-nss.crt" \
+       "${WORK_DIR}/rootfs/usr/local/share/certs/ca-root-nss.crt"
+    # OpenSSL이 참조하는 표준 경로에도 심볼릭 링크 대신 직접 복사
+    cp "/usr/local/share/certs/ca-root-nss.crt" \
+       "${WORK_DIR}/rootfs/etc/ssl/cert.pem"
+    cp "/usr/local/share/certs/ca-root-nss.crt" \
+       "${WORK_DIR}/rootfs/usr/local/etc/ssl/cert.pem"
+    echo "-> SSL 인증서 복사 완료"
+fi
+
 # 호스트 ABI 및 OSVERSION 자동 감지
 HOST_ABI=$(pkg config ABI 2>/dev/null || echo "FreeBSD:15:amd64")
 HOST_OSVERSION=$(sysctl -n kern.osreldate 2>/dev/null || echo "1500000")
 echo "-> 감지된 호스트 ABI: ${HOST_ABI}"
 echo "-> 감지된 호스트 OSVERSION: ${HOST_OSVERSION}"
 
-# pkg.conf 작성 (chroot 내부에서 읽힘)
+# pkg.conf 작성
 cat > "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf" << PKGEOF
 ABI = "${HOST_ABI}";
 OSVERSION = ${HOST_OSVERSION};
 REPOS_DIR = ["/etc/pkg/"];
 PKG_DBDIR = "/var/db/pkg";
 PKG_CACHEDIR = "/var/cache/pkg";
+SSL_CA_CERT_FILE = "/etc/ssl/cert.pem";
 PKGEOF
 
 # 저장소 설정 파일 작성
@@ -120,12 +164,7 @@ cat "${WORK_DIR}/rootfs/usr/local/etc/pkg.conf"
 echo "-> FreeBSD.conf 확인:"
 cat "${WORK_DIR}/rootfs/etc/pkg/FreeBSD.conf"
 
-# ================================================================
-# 핵심 수정: pkg -c 대신 실제 chroot 내부에서 pkg 직접 실행
-# chroot 안에서 실행해야 pkg.conf, 저장소 설정이 정확히 적용됨
-# ================================================================
-
-# devfs 마운트 (네트워크 소켓 접근에 필요)
+# devfs 마운트
 mount -t devfs devfs "${WORK_DIR}/rootfs/dev"
 
 echo "-> chroot 내부에서 pkg 부트스트랩 및 패키지 설치 시작..."
@@ -133,19 +172,18 @@ chroot "${WORK_DIR}/rootfs" /bin/sh << CHROOTEOF
 set -e
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export HOME=/root
+export SSL_CA_CERT_FILE=/etc/ssl/cert.pem
+export SSL_CERT_FILE=/etc/ssl/cert.pem
+
+echo "[chroot] SSL 인증서 확인..."
+ls -la /etc/ssl/cert.pem || echo "⚠️  cert.pem 없음"
+ls -la /usr/local/share/certs/ || echo "⚠️  certs 디렉토리 없음"
 
 echo "[chroot] pkg 부트스트랩 실행..."
 ASSUME_ALWAYS_YES=yes pkg bootstrap -f
 
-echo "[chroot] 저장소 설정 확인..."
-cat /usr/local/etc/pkg.conf
-cat /etc/pkg/FreeBSD.conf
-
 echo "[chroot] 저장소 카탈로그 동기화..."
 pkg update -f
-
-echo "[chroot] 저장소 연결 테스트..."
-pkg search gnome-shell | head -3
 
 echo "[chroot] 전체 패키지 설치..."
 pkg install -y ${PACKAGES}
